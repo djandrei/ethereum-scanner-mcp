@@ -1,0 +1,23 @@
+{
+  "name": "ethereum-scanner-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing the nodejs-ethereum-scanner smart contract scanner",
+  "type": "module",
+  "bin": {
+    "ethereum-scanner-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "ethers": "^6.17.0",
+    "nodejs-ethereum-scanner": "file:../nodejs-ethereum-scanner",
+    "zod": "^3.25.0"
+  }
+}

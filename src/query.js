@@ -1,0 +1,262 @@
+/**
+ * Query validation and matching.
+ *
+ * The scanner's SearchUtils hands everything outside a `< >` token to
+ * mathjs eval(). The CLI trusts its operator; this server does not trust
+ * the model, so a strict grammar is enforced before a query reaches
+ * SearchUtils:
+ *
+ *   query := term ( ('&&' | '||') term )*
+ *   term  := '!'? token | '(' query ')'
+ *   token := '<<' body '>>'
+ *   body  := signature | hexpattern
+ *
+ * `!` is only accepted directly before a token because SearchUtils only
+ * resolves `! <token>`; `! ( ... )` would reach mathjs as a factorial.
+ */
+
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const SearchUtils = require('nodejs-ethereum-scanner/utils/search-utils.js');
+
+export const MAX_QUERY_LENGTH = 2048;
+export const MAX_QUERY_TOKENS = 32;
+
+const SIGNATURE_RE = /^[A-Za-z_$][\w$]*\([\w$\[\], ()]*\)$/;
+const HEX_PATTERN_RE = /^0[xX][0-9a-fA-F.\[\]{}()|*+?,\-]+$/;
+// A group containing a quantifier that is itself quantified: (a+)+, (a*){2,}
+const NESTED_QUANTIFIER_RE = /\([^()]*[*+?}][^()]*\)[*+{]/;
+
+export class QueryError extends Error
+{
+    constructor(message, position)
+    {
+        super(position === undefined ? message : `${message} at position ${position}`);
+        this.name = 'QueryError';
+        this.position = position;
+    }
+}
+
+function tokenize(query)
+{
+    const tokens = [];
+    let i = 0;
+    while (i < query.length)
+    {
+        const ch = query[i];
+        if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r')
+        {
+            i++;
+            continue;
+        }
+        if (query.startsWith('<<', i))
+        {
+            const end = query.indexOf('>>', i + 2);
+            if (end === -1)
+            {
+                throw new QueryError("unterminated '<<' token", i);
+            }
+            const body = query.slice(i + 2, end).trim();
+            if (body.includes('<') || body.includes('>'))
+            {
+                throw new QueryError("token body cannot contain '<' or '>'", i);
+            }
+            tokens.push({ type: 'token', body, position: i });
+            i = end + 2;
+            continue;
+        }
+        if (query.startsWith('&&', i))
+        {
+            tokens.push({ type: 'and', position: i });
+            i += 2;
+            continue;
+        }
+        if (query.startsWith('||', i))
+        {
+            tokens.push({ type: 'or', position: i });
+            i += 2;
+            continue;
+        }
+        if (ch === '!' || ch === '(' || ch === ')')
+        {
+            tokens.push({ type: ch, position: i });
+            i++;
+            continue;
+        }
+        throw new QueryError(`unexpected character '${ch}'`, i);
+    }
+    return tokens;
+}
+
+function classifyBody(body, position)
+{
+    if (body.length === 0)
+    {
+        throw new QueryError('empty token', position);
+    }
+    if (HEX_PATTERN_RE.test(body))
+    {
+        const hex = body.slice(2);
+        if (NESTED_QUANTIFIER_RE.test(hex))
+        {
+            throw new QueryError('hex pattern contains a nested quantifier', position);
+        }
+        try
+        {
+            new RegExp(hex);
+        }
+        catch (error)
+        {
+            throw new QueryError(`hex pattern is not a valid regular expression (${error.message})`, position);
+        }
+        return { raw: body, kind: 'hex', hex: hex.toLowerCase() };
+    }
+    if (SIGNATURE_RE.test(body))
+    {
+        // The selector is filled in by hexaizeQuery() from SearchUtils' own derivation.
+        return { raw: body, kind: 'signature', hex: null };
+    }
+    throw new QueryError(`token '${body}' is neither a function signature nor a 0x hex pattern`, position);
+}
+
+/**
+ * Validates the query grammar. Returns the list of `<< >>` tokens in order.
+ * Throws QueryError on any violation.
+ */
+export function parseQuery(query)
+{
+    if (typeof query !== 'string' || query.trim().length === 0)
+    {
+        throw new QueryError('query is empty');
+    }
+    if (query.length > MAX_QUERY_LENGTH)
+    {
+        throw new QueryError(`query exceeds ${MAX_QUERY_LENGTH} characters`);
+    }
+
+    const tokens = tokenize(query);
+    const found = [];
+    let index = 0;
+
+    function peek()
+    {
+        return tokens[index];
+    }
+
+    function expect(type)
+    {
+        const token = tokens[index];
+        if (!token || token.type !== type)
+        {
+            const where = token ? token.position : query.length;
+            throw new QueryError(`expected '${type}'`, where);
+        }
+        index++;
+        return token;
+    }
+
+    function parseTerm()
+    {
+        const token = peek();
+        if (!token)
+        {
+            throw new QueryError('unexpected end of query', query.length);
+        }
+        if (token.type === '!')
+        {
+            index++;
+            const next = peek();
+            if (!next || next.type !== 'token')
+            {
+                throw new QueryError("'!' must be followed directly by a '<< >>' token", token.position);
+            }
+        }
+        const current = peek();
+        if (current.type === 'token')
+        {
+            index++;
+            found.push(classifyBody(current.body, current.position));
+            return;
+        }
+        if (current.type === '(')
+        {
+            index++;
+            parseExpression();
+            expect(')');
+            return;
+        }
+        throw new QueryError(`unexpected '${current.type}'`, current.position);
+    }
+
+    function parseExpression()
+    {
+        parseTerm();
+        while (peek() && (peek().type === 'and' || peek().type === 'or'))
+        {
+            index++;
+            parseTerm();
+        }
+    }
+
+    parseExpression();
+    if (index < tokens.length)
+    {
+        throw new QueryError(`unexpected '${tokens[index].type}'`, tokens[index].position);
+    }
+    if (found.length > MAX_QUERY_TOKENS)
+    {
+        throw new QueryError(`query exceeds ${MAX_QUERY_TOKENS} tokens`);
+    }
+    return found;
+}
+
+function buildSearchUtils(query)
+{
+    const searchUtils = new SearchUtils({ query });
+    searchUtils.setup();
+    return searchUtils;
+}
+
+/**
+ * Validates the query and returns its hexaized form as SearchUtils sees it,
+ * plus the per-token breakdown.
+ */
+export function hexaizeQuery(query)
+{
+    const tokens = parseQuery(query);
+    const searchUtils = buildSearchUtils(query);
+
+    // Fill in signature selectors from the scanner's own derivation so the
+    // two never disagree.
+    for (const token of tokens)
+    {
+        if (token.kind === 'signature')
+        {
+            token.hex = searchUtils.hexaizeQuery(`<<${token.raw}>>`).slice(1, -1);
+        }
+    }
+
+    return {
+        query,
+        hexaizedQuery: searchUtils.hexaizedQuery,
+        tokens
+    };
+}
+
+/**
+ * Validates the query once and returns a reusable matcher.
+ */
+export function createMatcher(query)
+{
+    parseQuery(query);
+    const searchUtils = buildSearchUtils(query);
+    return {
+        query,
+        hexaizedQuery: searchUtils.hexaizedQuery,
+        matches(bytecode)
+        {
+            return searchUtils.foundMatch(bytecode || '');
+        }
+    };
+}
