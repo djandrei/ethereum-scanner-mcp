@@ -2,17 +2,28 @@
  * In-memory registry of scan jobs. Jobs are lost when the process exits.
  */
 
+import type { ScanJob } from './scan-job.js';
+
+export interface JobStoreLimits
+{
+    maxConcurrentScans: number;
+    maxFinishedJobs: number;
+}
+
 export class JobStore
 {
-    constructor({ maxConcurrentScans, maxFinishedJobs })
+    private readonly maxConcurrentScans: number;
+    private readonly maxFinishedJobs: number;
+    private readonly jobs = new Map<string, ScanJob>();
+    private sequence = 0;
+
+    constructor({ maxConcurrentScans, maxFinishedJobs }: JobStoreLimits)
     {
         this.maxConcurrentScans = maxConcurrentScans;
         this.maxFinishedJobs = maxFinishedJobs;
-        this.jobs = new Map();
-        this.sequence = 0;
     }
 
-    runningCount()
+    runningCount(): number
     {
         let count = 0;
         for (const job of this.jobs.values())
@@ -25,12 +36,12 @@ export class JobStore
         return count;
     }
 
-    canStart()
+    canStart(): boolean
     {
         return this.runningCount() < this.maxConcurrentScans;
     }
 
-    add(job)
+    add(job: ScanJob): void
     {
         // Insertion order, not the millisecond timestamp: jobs started in the
         // same millisecond must still order and evict deterministically.
@@ -39,18 +50,18 @@ export class JobStore
         this.evictFinished();
     }
 
-    get(jobId)
+    get(jobId: string): ScanJob | null
     {
-        return this.jobs.get(jobId) || null;
+        return this.jobs.get(jobId) ?? null;
     }
 
     /** Most recent first. */
-    list()
+    list(): ScanJob[]
     {
         return Array.from(this.jobs.values()).sort((a, b) => b.sequence - a.sequence);
     }
 
-    evictFinished()
+    evictFinished(): void
     {
         const finished = this.list().filter(job => job.isFinished());
         for (const job of finished.slice(this.maxFinishedJobs))

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseQuery, hexaizeQuery, createMatcher, QueryError } from '../src/query.js';
-import { template } from './stub-provider.js';
+import { templateA } from './stub-provider.js';
 
 test('hexaizes the README examples exactly as the CLI does', () =>
 {
@@ -30,7 +30,7 @@ test('accepts tuple and array types in signatures', () =>
     assert.equal(parseQuery('<<f((uint256,address)[],bytes32)>>').length, 1);
 });
 
-const rejected = [
+const rejected: Array<[string, string]> = [
     ['', 'empty'],
     ['transfer(address,uint256)', 'bare signature outside a token'],
     ['<<transfer(address,uint256)>> && 1', 'bare number'],
@@ -46,7 +46,7 @@ const rejected = [
     ['<<a()>> &&', 'trailing operator'],
     ['(<<a()>>', 'unbalanced parenthesis'],
     ['<<a()>> & <<b()>>', 'single ampersand'],
-    ['<'.repeat(1) + '<a()>'.repeat(1) + '>' + 'x'.repeat(2048), 'over-length']
+    ['<<a()>>' + 'x'.repeat(2048), 'over-length']
 ];
 
 for (const [query, why] of rejected)
@@ -59,13 +59,13 @@ for (const [query, why] of rejected)
 
 test('rejects more than 32 tokens', () =>
 {
-    const query = Array(33).fill('<<a()>>').join(' || ');
+    const query = Array<string>(33).fill('<<a()>>').join(' || ');
     assert.throws(() => parseQuery(query), /exceeds 32 tokens/);
 });
 
 test('matches the template bytecode like the scanner', () =>
 {
-    const code = template[0].contractBytecode;
+    const code = templateA.contractBytecode;
     assert.equal(createMatcher('<<0x549262ba>>').matches(code), true);
     assert.equal(createMatcher('<<transfer(address,uint256)>>').matches(code), false);
     assert.equal(createMatcher('<<0x549262ba>> && ! <<transfer(address,uint256)>>').matches(code), true);
@@ -73,4 +73,5 @@ test('matches the template bytecode like the scanner', () =>
     assert.equal(createMatcher('<<0x6d4ce63c14[0-9a-f]{4}>>').matches(code), true);
     assert.equal(createMatcher('<<0x549262ba>>').matches('0x'), false);
     assert.equal(createMatcher('<<0x549262ba>>').matches(''), false);
+    assert.equal(createMatcher('<<0x549262ba>>').matches(null), false);
 });

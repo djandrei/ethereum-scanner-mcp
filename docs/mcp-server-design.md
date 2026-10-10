@@ -130,15 +130,15 @@ MCP client (Claude Code / Desktop)
 ┌──────────────────────────────────────────────────────┐
 │ ethereum-scanner-mcp                                 │
 │                                                      │
-│  src/index.js      parse config, start McpServer     │
-│  src/server.js     register tools                    │
-│  src/config.js     env → Config (validated)          │
-│  src/rpc.js        ethers v6 JsonRpcProvider,        │
-│                    network status                    │
-│  src/query.js      validate + hexaize + match        │
+│  src/index.ts      parse config, start McpServer     │
+│  src/server.ts     register tools                    │
+│  src/config.ts     env → Config (validated)          │
+│  src/rpc.ts        ethers v6 JsonRpcProvider,        │
+│                    network status, ScanProvider type │
+│  src/query.ts      validate + hexaize + match        │
 │                    (wraps scanner SearchUtils)       │
-│  src/scan-job.js   one job: loop, progress, cancel   │
-│  src/job-store.js  in-memory registry, limits        │
+│  src/scan-job.ts   one job: loop, progress, cancel   │
+│  src/job-store.ts  in-memory registry, limits        │
 └──────────────┬───────────────────────────────────────┘
                │ require('nodejs-ethereum-scanner/utils/search-utils.js')
                ▼
@@ -148,9 +148,13 @@ MCP client (Claude Code / Desktop)
    Ethereum JSON-RPC endpoint (ETH_RPC_URL)
 ```
 
-Language: JavaScript, ES modules, no build step. This matches the scanner
-project (plain Node, no TypeScript). `search-utils.js` is CommonJS; Node
-imports it from ESM without extra tooling.
+Language: TypeScript (strict), compiled by `tsc` to ES modules in `dist/`.
+`search-utils.js` is CommonJS and untyped; `query.ts` loads it through
+`createRequire` and casts it to a small local interface covering the four
+members the server uses. The scan loop depends on a `ScanProvider`
+interface (the six provider methods it calls) rather than on ethers'
+`JsonRpcProvider` class, so tests substitute a stub without mocking
+ethers.
 
 Logging goes to `stderr` only. Nothing in the server may write to `stdout`.
 
@@ -178,7 +182,7 @@ Example Claude Code registration:
   "mcpServers": {
     "ethereum-scanner": {
       "command": "node",
-      "args": ["/path/to/ethereum-scanner-mcp/src/index.js"],
+      "args": ["/path/to/ethereum-scanner-mcp/dist/src/index.js"],
       "env": { "ETH_RPC_URL": "https://mainnet.infura.io/v3/<key>" }
     }
   }
@@ -463,24 +467,28 @@ ethereum-scanner-mcp/
 ├── docs/
 │   └── mcp-server-design.md      this document
 ├── src/
-│   ├── index.js                  entry point (#!/usr/bin/env node)
-│   ├── server.js                 McpServer + tool registration
-│   ├── config.js
-│   ├── rpc.js
-│   ├── query.js
-│   ├── scan-job.js
-│   └── job-store.js
+│   ├── index.ts                  entry point (#!/usr/bin/env node)
+│   ├── server.ts                 McpServer + tool registration
+│   ├── config.ts
+│   ├── rpc.ts
+│   ├── query.ts
+│   ├── scan-job.ts
+│   └── job-store.ts
 ├── test/
-│   ├── query.test.js
-│   ├── scan-job.test.js
-│   ├── server.test.js            tools exercised through the SDK's in-memory transport
-│   └── stub-provider.js          fake provider built from the scanner's template-output.json
-├── package.json                  "type": "module", "bin": { "ethereum-scanner-mcp": "src/index.js" }
+│   ├── query.test.ts
+│   ├── scan-job.test.ts
+│   ├── server.test.ts            tools exercised through the SDK's in-memory transport
+│   └── stub-provider.ts          fake provider built from the scanner's template-output.json
+├── dist/                         tsc output (ignored by git); bin points at dist/src/index.js
+├── tsconfig.json                 strict, NodeNext, rootDir ".", outDir "dist"
+├── package.json                  "type": "module", "bin": { "ethereum-scanner-mcp": "dist/src/index.js" }
 ├── LICENSE.md
 └── .gitignore
 ```
 
-Test runner: `node --test` (built into Node 24). No extra test dependency.
+Build: `npm run build` (`tsc`). Test runner: `tsc && node --test` over
+`dist/test`; `node --test` is built into Node, so the only development
+dependencies are `typescript` and `@types/node`.
 
 ## 11. Verification plan
 
@@ -506,7 +514,7 @@ Test runner: `node --test` (built into Node 24). No extra test dependency.
 
 ### Protocol check
 
-`npx @modelcontextprotocol/inspector node src/index.js` lists nine tools and
+`npx @modelcontextprotocol/inspector node dist/src/index.js` lists nine tools and
 each tool call returns `structuredContent` matching its declared output
 schema.
 

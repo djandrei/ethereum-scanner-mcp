@@ -3,8 +3,28 @@
  * Tools cannot override any of these values at runtime.
  */
 
-const DEFAULTS = {
-    ETH_RPC_URL: 'http://localhost:8545',
+export interface Config
+{
+    rpcUrl: string;
+    defaultDelayMs: number;
+    maxBlocksPerScan: number;
+    maxConcurrentScans: number;
+    maxFinishedJobs: number;
+    maxMatchesPerScan: number;
+    rpcTimeoutMs: number;
+}
+
+type IntegerVariable =
+    | 'SCANNER_DEFAULT_DELAY_MS'
+    | 'SCANNER_MAX_BLOCKS_PER_SCAN'
+    | 'SCANNER_MAX_CONCURRENT_SCANS'
+    | 'SCANNER_MAX_FINISHED_JOBS'
+    | 'SCANNER_MAX_MATCHES_PER_SCAN'
+    | 'SCANNER_RPC_TIMEOUT_MS';
+
+const DEFAULT_RPC_URL = 'http://localhost:8545';
+
+const INTEGER_DEFAULTS: Record<IntegerVariable, number> = {
     SCANNER_DEFAULT_DELAY_MS: 1000,
     SCANNER_MAX_BLOCKS_PER_SCAN: 1000,
     SCANNER_MAX_CONCURRENT_SCANS: 2,
@@ -13,12 +33,14 @@ const DEFAULTS = {
     SCANNER_RPC_TIMEOUT_MS: 30000
 };
 
-function readInteger(env, name, min)
+type Environment = Record<string, string | undefined>;
+
+function readInteger(env: Environment, name: IntegerVariable, min: number): number
 {
     const raw = env[name];
     if (raw === undefined || raw === '')
     {
-        return DEFAULTS[name];
+        return INTEGER_DEFAULTS[name];
     }
     const value = Number(raw);
     if (!Number.isInteger(value) || value < min)
@@ -28,10 +50,10 @@ function readInteger(env, name, min)
     return value;
 }
 
-export function loadConfig(env = process.env)
+export function loadConfig(env: Environment = process.env): Config
 {
-    const rpcUrl = env.ETH_RPC_URL || DEFAULTS.ETH_RPC_URL;
-    let parsed;
+    const rpcUrl = env.ETH_RPC_URL || DEFAULT_RPC_URL;
+    let parsed: URL;
     try
     {
         parsed = new URL(rpcUrl);

@@ -1,16 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ScanJob } from '../src/scan-job.js';
+import { ScanJob, type ScanLimits, type ScanParams } from '../src/scan-job.js';
 import { createMatcher } from '../src/query.js';
-import { template, templateScenario, createStubProvider, creationTx } from './stub-provider.js';
+import type { ScanProvider } from '../src/rpc.js';
+import { templateA, templateB, templateScenario, createStubProvider, creationTx } from './stub-provider.js';
 
 const CLI_FIELDS = [
     'blockNumber', 'transactionHash', 'contractAddress', 'ownerAddress', 'transactionNonce',
     'transactionValue', 'contractBalance', 'transactionData', 'contractBytecode'
 ];
 
-function makeJob(provider, params, limits = {})
+type ParamOverrides = Partial<ScanParams> & { query: string };
+
+function makeJob(provider: ScanProvider, params: ParamOverrides, limits: Partial<ScanLimits> = {}): ScanJob
 {
     return new ScanJob({
         provider,
@@ -37,9 +40,9 @@ test('finds both template contracts with the CLI field names', async () =>
     assert.equal(job.blocksScanned, 3);
     assert.equal(job.contractsExamined, 2);
     assert.equal(job.matches.length, 2);
-    assert.deepEqual(Object.keys(job.matches[0]), CLI_FIELDS);
-    assert.deepEqual(job.matches[0], { ...template[0], blockNumber: 1 });
-    assert.deepEqual(job.matches[1], { ...template[1], blockNumber: 2, contractBalance: '5' });
+    assert.deepEqual(Object.keys(job.matches[0] ?? {}), CLI_FIELDS);
+    assert.deepEqual(job.matches[0], { ...templateA, blockNumber: 1 });
+    assert.deepEqual(job.matches[1], { ...templateB, blockNumber: 2, contractBalance: '5' });
     assert.equal(job.truncated, false);
     assert.equal(job.error, null);
 });
@@ -60,7 +63,7 @@ test('onlyNonZeroBalance filters zero-balance contracts', async () =>
     const job = makeJob(templateScenario(), { query: '<<0x549262ba>>', onlyNonZeroBalance: true }).start();
     await job.done;
     assert.equal(job.matches.length, 1);
-    assert.equal(job.matches[0].contractAddress, template[1].contractAddress);
+    assert.equal(job.matches[0]?.contractAddress, templateB.contractAddress);
 });
 
 test('searchCreation and searchRuntime select the data source', async () =>
@@ -84,7 +87,7 @@ test('searchCreation and searchRuntime select the data source', async () =>
 
 test('warns on invalid blocks and empty bytecode', async () =>
 {
-    const [a] = template;
+    const a = templateA;
     const provider = createStubProvider({
         blocks: { 1: null, 2: [creationTx(a)] },
         receipts: { [a.transactionHash]: { contractAddress: a.contractAddress, from: a.ownerAddress, blockNumber: 2 } },
@@ -99,6 +102,16 @@ test('warns on invalid blocks and empty bytecode', async () =>
         'block 1: invalid block',
         'block 2: cannot retrieve contract bytecode from provider, consider searching creation'
     ]);
+});
+
+test('a missing receipt fails the job', async () =>
+{
+    const a = templateA;
+    const provider = createStubProvider({ blocks: { 1: [creationTx(a)] }, receipts: {} });
+    const job = makeJob(provider, { query: '<<0x549262ba>>', blockEnd: 1 }).start();
+    await job.done;
+    assert.equal(job.state, 'failed');
+    assert.match(job.error ?? '', /no receipt or contract address/);
 });
 
 test('cancel stops at the next RPC call and keeps partial results', async () =>
@@ -120,7 +133,7 @@ test('cancel stops at the next RPC call and keeps partial results', async () =>
     assert.equal(job.state, 'cancelled');
     assert.equal(job.matches.length, 1);
     assert.equal(job.currentBlock, 2);
-    assert.equal(provider.calls.filter(call => call.includes(template[1].transactionHash)).length, 0);
+    assert.equal(provider.calls.filter(call => call.includes(templateB.transactionHash)).length, 0);
     assert.ok(job.finishedAt);
 });
 
@@ -158,7 +171,7 @@ test('RPC failure after retries moves the job to failed and keeps earlier matche
     await job.done;
 
     assert.equal(job.state, 'failed');
-    assert.match(job.error, /getBlock\(2\) failed after 3 attempts: boom/);
+    assert.match(job.error ?? '', /getBlock\(2\) failed after 3 attempts: boom/);
     assert.equal(job.matches.length, 1);
     assert.equal(provider.calls.filter(call => call === 'getBlock(2)').length, 0);
 });
@@ -170,7 +183,7 @@ test('a hanging RPC call times out instead of blocking forever', async () =>
     const job = makeJob(provider, { query: '<<0x549262ba>>' }, { rpcTimeoutMs: 20 }).start();
     await job.done;
     assert.equal(job.state, 'failed');
-    assert.match(job.error, /timed out after 20 ms/);
+    assert.match(job.error ?? '', /timed out after 20 ms/);
 });
 
 test('match cap sets truncated and completes early', async () =>
@@ -182,5 +195,5 @@ test('match cap sets truncated and completes early', async () =>
     assert.equal(job.truncated, true);
     assert.equal(job.matches.length, 1);
     assert.equal(job.blocksScanned, 1);
-    assert.match(job.warnings[0], /match cap of 1 reached/);
+    assert.match(job.warnings[0] ?? '', /match cap of 1 reached/);
 });

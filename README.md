@@ -13,7 +13,10 @@ dependencies installed:
 ```
 $ (cd ../nodejs-ethereum-scanner && npm install)
 $ npm install
+$ npm run build
 ```
+
+The server is written in TypeScript and compiled to `dist/` by `tsc`.
 
 ## Configuration
 
@@ -34,7 +37,7 @@ Claude Code registration (`.mcp.json` or `claude mcp add`):
   "mcpServers": {
     "ethereum-scanner": {
       "command": "node",
-      "args": ["/path/to/ethereum-scanner-mcp/src/index.js"],
+      "args": ["/path/to/ethereum-scanner-mcp/dist/src/index.js"],
       "env": { "ETH_RPC_URL": "https://mainnet.infura.io/v3/<key>" }
     }
   }
@@ -66,3 +69,6 @@ with `&&`, `||`, `!` and parentheses.
 ```
 $ npm test
 ```
+
+This compiles the sources and tests, then runs the suite with Node's
+built-in test runner.

@@ -17,8 +17,19 @@
 
 import { createRequire } from 'node:module';
 
+/** The parts of the scanner's SearchUtils (CommonJS, untyped) that this server uses. */
+interface SearchUtilsInstance
+{
+    hexaizedQuery: string;
+    setup(): void;
+    hexaizeQuery(query: string): string;
+    foundMatch(bytecode: string): boolean;
+}
+
+type SearchUtilsConstructor = new (parameters: { query: string }) => SearchUtilsInstance;
+
 const require = createRequire(import.meta.url);
-const SearchUtils = require('nodejs-ethereum-scanner/utils/search-utils.js');
+const SearchUtils = require('nodejs-ethereum-scanner/utils/search-utils.js') as SearchUtilsConstructor;
 
 export const MAX_QUERY_LENGTH = 2048;
 export const MAX_QUERY_TOKENS = 32;
@@ -28,9 +39,35 @@ const HEX_PATTERN_RE = /^0[xX][0-9a-fA-F.\[\]{}()|*+?,\-]+$/;
 // A group containing a quantifier that is itself quantified: (a+)+, (a*){2,}
 const NESTED_QUANTIFIER_RE = /\([^()]*[*+?}][^()]*\)[*+{]/;
 
+export type TokenKind = 'signature' | 'hex';
+
+export interface QueryToken
+{
+    raw: string;
+    kind: TokenKind;
+    /** Bare lowercase hex; filled in from SearchUtils for signatures. */
+    hex: string;
+}
+
+export interface HexaizedQuery
+{
+    query: string;
+    hexaizedQuery: string;
+    tokens: QueryToken[];
+}
+
+export interface Matcher
+{
+    query: string;
+    hexaizedQuery: string;
+    matches(bytecode: string | null | undefined): boolean;
+}
+
 export class QueryError extends Error
 {
-    constructor(message, position)
+    readonly position: number | undefined;
+
+    constructor(message: string, position?: number)
     {
         super(position === undefined ? message : `${message} at position ${position}`);
         this.name = 'QueryError';
@@ -38,13 +75,17 @@ export class QueryError extends Error
     }
 }
 
-function tokenize(query)
+type LexToken =
+    | { type: 'token'; body: string; position: number }
+    | { type: 'and' | 'or' | '!' | '(' | ')'; position: number };
+
+function tokenize(query: string): LexToken[]
 {
-    const tokens = [];
+    const tokens: LexToken[] = [];
     let i = 0;
     while (i < query.length)
     {
-        const ch = query[i];
+        const ch = query[i] as string;
         if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r')
         {
             i++;
@@ -89,7 +130,7 @@ function tokenize(query)
     return tokens;
 }
 
-function classifyBody(body, position)
+function classifyBody(body: string, position: number): QueryToken
 {
     if (body.length === 0)
     {
@@ -108,14 +149,15 @@ function classifyBody(body, position)
         }
         catch (error)
         {
-            throw new QueryError(`hex pattern is not a valid regular expression (${error.message})`, position);
+            const reason = error instanceof Error ? error.message : String(error);
+            throw new QueryError(`hex pattern is not a valid regular expression (${reason})`, position);
         }
         return { raw: body, kind: 'hex', hex: hex.toLowerCase() };
     }
     if (SIGNATURE_RE.test(body))
     {
         // The selector is filled in by hexaizeQuery() from SearchUtils' own derivation.
-        return { raw: body, kind: 'signature', hex: null };
+        return { raw: body, kind: 'signature', hex: '' };
     }
     throw new QueryError(`token '${body}' is neither a function signature nor a 0x hex pattern`, position);
 }
@@ -124,7 +166,7 @@ function classifyBody(body, position)
  * Validates the query grammar. Returns the list of `<< >>` tokens in order.
  * Throws QueryError on any violation.
  */
-export function parseQuery(query)
+export function parseQuery(query: string): QueryToken[]
 {
     if (typeof query !== 'string' || query.trim().length === 0)
     {
@@ -136,15 +178,15 @@ export function parseQuery(query)
     }
 
     const tokens = tokenize(query);
-    const found = [];
+    const found: QueryToken[] = [];
     let index = 0;
 
-    function peek()
+    function peek(): LexToken | undefined
     {
         return tokens[index];
     }
 
-    function expect(type)
+    function expect(type: LexToken['type']): void
     {
         const token = tokens[index];
         if (!token || token.type !== type)
@@ -153,10 +195,9 @@ export function parseQuery(query)
             throw new QueryError(`expected '${type}'`, where);
         }
         index++;
-        return token;
     }
 
-    function parseTerm()
+    function parseTerm(): void
     {
         const token = peek();
         if (!token)
@@ -172,7 +213,7 @@ export function parseQuery(query)
                 throw new QueryError("'!' must be followed directly by a '<< >>' token", token.position);
             }
         }
-        const current = peek();
+        const current = peek() as LexToken;
         if (current.type === 'token')
         {
             index++;
@@ -189,20 +230,23 @@ export function parseQuery(query)
         throw new QueryError(`unexpected '${current.type}'`, current.position);
     }
 
-    function parseExpression()
+    function parseExpression(): void
     {
         parseTerm();
-        while (peek() && (peek().type === 'and' || peek().type === 'or'))
+        let next = peek();
+        while (next && (next.type === 'and' || next.type === 'or'))
         {
             index++;
             parseTerm();
+            next = peek();
         }
     }
 
     parseExpression();
-    if (index < tokens.length)
+    const trailing = tokens[index];
+    if (trailing)
     {
-        throw new QueryError(`unexpected '${tokens[index].type}'`, tokens[index].position);
+        throw new QueryError(`unexpected '${trailing.type}'`, trailing.position);
     }
     if (found.length > MAX_QUERY_TOKENS)
     {
@@ -211,7 +255,7 @@ export function parseQuery(query)
     return found;
 }
 
-function buildSearchUtils(query)
+function buildSearchUtils(query: string): SearchUtilsInstance
 {
     const searchUtils = new SearchUtils({ query });
     searchUtils.setup();
@@ -222,7 +266,7 @@ function buildSearchUtils(query)
  * Validates the query and returns its hexaized form as SearchUtils sees it,
  * plus the per-token breakdown.
  */
-export function hexaizeQuery(query)
+export function hexaizeQuery(query: string): HexaizedQuery
 {
     const tokens = parseQuery(query);
     const searchUtils = buildSearchUtils(query);
@@ -247,7 +291,7 @@ export function hexaizeQuery(query)
 /**
  * Validates the query once and returns a reusable matcher.
  */
-export function createMatcher(query)
+export function createMatcher(query: string): Matcher
 {
     parseQuery(query);
     const searchUtils = buildSearchUtils(query);

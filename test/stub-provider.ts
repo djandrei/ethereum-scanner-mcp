@@ -4,11 +4,14 @@
  */
 
 import { createRequire } from 'node:module';
+import type { RpcBlock, RpcReceipt, RpcTransaction, ScanProvider } from '../src/rpc.js';
+import type { MatchRecord } from '../src/scan-job.js';
 
 const require = createRequire(import.meta.url);
-export const template = require('nodejs-ethereum-scanner/template-output.json');
+export const template = require('nodejs-ethereum-scanner/template-output.json') as MatchRecord[];
+export const [templateA, templateB] = template as [MatchRecord, MatchRecord];
 
-export function creationTx(record, overrides = {})
+export function creationTx(record: MatchRecord, overrides: Partial<RpcTransaction> = {}): RpcTransaction
 {
     return {
         hash: record.transactionHash,
@@ -20,21 +23,29 @@ export function creationTx(record, overrides = {})
     };
 }
 
-export function callTx(hash)
+export function callTx(hash: string): RpcTransaction
 {
     return { hash, to: '0x0000000000000000000000000000000000000001', nonce: 5, value: 0n, data: '0x' };
 }
 
-/**
- * @param {object} options
- * @param {Record<number, object[]|null>} options.blocks   block number -> transactions (null = invalid block)
- * @param {Record<string, object>} options.receipts        tx hash -> { contractAddress, from, blockNumber }
- * @param {Record<string, bigint>} [options.balances]      address -> balance
- * @param {Record<string, string>} [options.codes]         address -> runtime code
- */
-export function createStubProvider({ blocks, receipts, balances = {}, codes = {}, blockNumber = 100 })
+export interface StubOptions
 {
-    const calls = [];
+    /** block number -> transactions; null marks an invalid block */
+    blocks: Record<number, RpcTransaction[] | null>;
+    receipts: Record<string, RpcReceipt>;
+    balances?: Record<string, bigint>;
+    codes?: Record<string, string>;
+    blockNumber?: number;
+}
+
+export interface StubProvider extends ScanProvider
+{
+    calls: string[];
+}
+
+export function createStubProvider({ blocks, receipts, balances = {}, codes = {}, blockNumber = 100 }: StubOptions): StubProvider
+{
+    const calls: string[] = [];
     return {
         calls,
         async getNetwork()
@@ -47,31 +58,35 @@ export function createStubProvider({ blocks, receipts, balances = {}, codes = {}
             calls.push('getBlockNumber');
             return blockNumber;
         },
-        async getBlock(number, prefetch)
+        async getBlock(number: number | 'latest', prefetch?: boolean): Promise<RpcBlock | null>
         {
             calls.push(`getBlock(${number})`);
             if (number === 'latest')
             {
-                return { gasLimit: 30000000n };
+                return { gasLimit: 30000000n, prefetchedTransactions: [] };
             }
             const txs = blocks[number];
             if (txs === null || txs === undefined)
             {
                 return null;
             }
-            return { number, prefetchedTransactions: prefetch ? txs : txs.map(tx => tx.hash) };
+            if (!prefetch)
+            {
+                throw new Error('stub only supports prefetched transactions');
+            }
+            return { gasLimit: 30000000n, prefetchedTransactions: txs };
         },
-        async getTransactionReceipt(hash)
+        async getTransactionReceipt(hash: string)
         {
             calls.push(`getTransactionReceipt(${hash})`);
-            return receipts[hash];
+            return receipts[hash] ?? null;
         },
-        async getBalance(address)
+        async getBalance(address: string)
         {
             calls.push(`getBalance(${address})`);
             return balances[address] ?? 0n;
         },
-        async getCode(address)
+        async getCode(address: string)
         {
             calls.push(`getCode(${address})`);
             return codes[address] ?? '0x';
@@ -79,10 +94,11 @@ export function createStubProvider({ blocks, receipts, balances = {}, codes = {}
     };
 }
 
-/** Two blocks: block 1 holds a call tx and template[0]'s creation, block 2 holds template[1]'s creation. */
-export function templateScenario()
+/** Two blocks: block 1 holds a call tx and templateA's creation, block 2 holds templateB's creation. */
+export function templateScenario(): StubProvider
 {
-    const [a, b] = template;
+    const a = templateA;
+    const b = templateB;
     return createStubProvider({
         blocks: {
             1: [callTx('0x' + 'aa'.repeat(32)), creationTx(a)],

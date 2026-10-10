@@ -5,12 +5,15 @@
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { id as keccakId, isAddress } from 'ethers';
 
+import type { Config } from './config.js';
+import type { JobStore } from './job-store.js';
 import { hexaizeQuery, createMatcher, QueryError } from './query.js';
-import { getNetworkStatus, maskUrl, withTimeout } from './rpc.js';
-import { ScanJob } from './scan-job.js';
+import { getNetworkStatus, maskUrl, withTimeout, type ScanProvider } from './rpc.js';
+import { ScanJob, type Logger } from './scan-job.js';
 
 const HEX_RE = /^0[xX][0-9a-fA-F]*$/;
 
@@ -63,7 +66,7 @@ const scanSummaryShape = {
     finishedAt: z.string().nullable()
 };
 
-function ok(structuredContent, text)
+function ok(structuredContent: Record<string, unknown>, text: string): CallToolResult
 {
     return {
         content: [{ type: 'text', text }],
@@ -71,7 +74,7 @@ function ok(structuredContent, text)
     };
 }
 
-function fail(message)
+function fail(message: string): CallToolResult
 {
     return {
         content: [{ type: 'text', text: message }],
@@ -80,13 +83,15 @@ function fail(message)
 }
 
 /** Wraps a handler so that any thrown error becomes an isError result. */
-function guarded(handler)
+function guarded<TArgs extends unknown[]>(
+    handler: (...args: TArgs) => Promise<CallToolResult>
+): (...args: TArgs) => Promise<CallToolResult>
 {
-    return async (args, extra) =>
+    return async (...args) =>
     {
         try
         {
-            return await handler(args, extra);
+            return await handler(...args);
         }
         catch (error)
         {
@@ -94,19 +99,20 @@ function guarded(handler)
             {
                 return fail(`invalid query: ${error.message}`);
             }
-            return fail(error.message || String(error));
+            return fail(error instanceof Error ? error.message : String(error));
         }
     };
 }
 
-/**
- * @param {object} deps
- * @param {object} deps.config          see config.js
- * @param {import('ethers').JsonRpcProvider} deps.provider
- * @param {import('./job-store.js').JobStore} deps.jobStore
- * @param {(message: string) => void} deps.log
- */
-export function createServer({ config, provider, jobStore, log })
+export interface ServerDependencies
+{
+    config: Config;
+    provider: ScanProvider;
+    jobStore: JobStore;
+    log: Logger;
+}
+
+export function createServer({ config, provider, jobStore, log }: ServerDependencies): McpServer
 {
     const server = new McpServer({
         name: 'ethereum-scanner',
@@ -154,7 +160,7 @@ export function createServer({ config, provider, jobStore, log })
     }, guarded(async ({ query }) =>
     {
         const result = hexaizeQuery(query);
-        return ok(result, result.hexaizedQuery);
+        return ok({ ...result }, result.hexaizedQuery);
     }));
 
     server.registerTool('match_bytecode', {
@@ -180,8 +186,8 @@ export function createServer({ config, provider, jobStore, log })
             return fail('provide exactly one of bytecode or address');
         }
         const matcher = createMatcher(query);
-        let code = bytecode;
-        let source = 'argument';
+        let code: string;
+        let source: 'argument' | 'rpc';
         if (address !== undefined)
         {
             if (!isAddress(address))
@@ -190,6 +196,11 @@ export function createServer({ config, provider, jobStore, log })
             }
             code = await withTimeout(provider.getCode(address), rpcTimeoutMs, 'getCode');
             source = 'rpc';
+        }
+        else
+        {
+            code = bytecode as string;
+            source = 'argument';
         }
         const match = matcher.matches(code);
         const bytecodeLength = code.replace(/^0[xX]/, '').length / 2;
@@ -249,11 +260,8 @@ export function createServer({ config, provider, jobStore, log })
             return fail(`concurrency limit of ${config.maxConcurrentScans} running scans reached; wait or cancel a scan`);
         }
 
-        let blockEnd = args.blockEnd;
-        if (blockEnd === undefined)
-        {
-            blockEnd = await withTimeout(provider.getBlockNumber(), rpcTimeoutMs, 'getBlockNumber');
-        }
+        const blockEnd = args.blockEnd ??
+            await withTimeout(provider.getBlockNumber(), rpcTimeoutMs, 'getBlockNumber');
         if (args.blockStart > blockEnd)
         {
             return fail(`block start ${args.blockStart} cannot be greater than block end ${blockEnd}`);
@@ -277,7 +285,7 @@ export function createServer({ config, provider, jobStore, log })
                 searchCreation,
                 searchRuntime,
                 onlyNonZeroBalance: args.onlyNonZeroBalance === true,
-                delayMs: args.delayMs === undefined ? config.defaultDelayMs : args.delayMs
+                delayMs: args.delayMs ?? config.defaultDelayMs
             },
             limits: { maxMatches: config.maxMatchesPerScan, rpcTimeoutMs },
             log
@@ -311,7 +319,7 @@ export function createServer({ config, provider, jobStore, log })
             return fail(`unknown job ${jobId}`);
         }
         const status = job.status();
-        return ok(status, `${status.state}: block ${status.currentBlock ?? '-'} of ${status.blockEnd}, ${status.matchCount} matches`);
+        return ok({ ...status }, `${status.state}: block ${status.currentBlock ?? '-'} of ${status.blockEnd}, ${status.matchCount} matches`);
     }));
 
     server.registerTool('get_scan_results', {
@@ -346,7 +354,7 @@ export function createServer({ config, provider, jobStore, log })
             {
                 return { ...match };
             }
-            const { transactionData, contractBytecode, ...rest } = match;
+            const { transactionData: _data, contractBytecode: _code, ...rest } = match;
             return rest;
         });
         const result = { jobId, state: job.state, total: job.matches.length, offset, limit, matches: page };
@@ -355,7 +363,7 @@ export function createServer({ config, provider, jobStore, log })
 
     server.registerTool('cancel_scan', {
         title: 'Cancel a scan',
-        description: 'Request cancellation of a running scan. The scan stops before its next block; results found so far are kept.',
+        description: 'Request cancellation of a running scan. The scan stops at its next RPC call; results found so far are kept.',
         inputSchema: {
             jobId: z.string().describe('Job id returned by start_scan')
         },
@@ -370,7 +378,7 @@ export function createServer({ config, provider, jobStore, log })
         }
         job.cancel();
         const status = job.status();
-        return ok(status, `${jobId}: ${status.state}`);
+        return ok({ ...status }, `${jobId}: ${status.state}`);
     }));
 
     server.registerTool('list_scans', {
