@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -21,7 +23,12 @@ const BASE_ENV = {
     MCP_AUTH_TOKEN: TOKEN
 };
 
-async function startServer(overrides: Record<string, string> = {})
+const INITIALIZE_BODY = JSON.stringify({
+    jsonrpc: '2.0', id: 1, method: 'initialize',
+    params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '0' } }
+});
+
+async function startServer(overrides: Record<string, string> = {}, createSession?: () => ReturnType<typeof createServer>)
 {
     const config = loadConfig({ ...BASE_ENV, ...overrides });
     assert.ok(config.http);
@@ -29,7 +36,7 @@ async function startServer(overrides: Record<string, string> = {})
     const jobStore = new JobStore(config);
     const handle = await startHttpServer({
         config: config.http,
-        createSession: () => createServer({ config, provider, jobStore, log: () => {} }),
+        createSession: createSession ?? (() => createServer({ config, provider, jobStore, log: () => {} })),
         log: () => {}
     });
     return { handle, jobStore, url: new URL(`http://127.0.0.1:${handle.port}/mcp`) };
@@ -78,9 +85,12 @@ function rawRequest(url: URL, options: { method?: string; headers?: Record<strin
     });
 }
 
-async function withServer(run: (context: Awaited<ReturnType<typeof startServer>>) => Promise<void>, overrides: Record<string, string> = {})
+async function withServer(
+    run: (context: Awaited<ReturnType<typeof startServer>>) => Promise<void>,
+    overrides: Record<string, string> = {},
+    createSession?: () => ReturnType<typeof createServer>)
 {
-    const context = await startServer(overrides);
+    const context = await startServer(overrides, createSession);
     try
     {
         await run(context);
@@ -155,8 +165,7 @@ test('rejects unknown paths and rebinding Host headers', async () =>
 
         const rebinding = await rawRequest(url, {
             headers: { Host: 'evil.example.org', Authorization: `Bearer ${TOKEN}` },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
-                protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'x', version: '0' } } })
+            body: INITIALIZE_BODY
         });
         assert.equal(rebinding.status, 403);
         assert.equal(handle.sessionCount(), 0, 'a rejected initialize leaves no session behind');
@@ -266,4 +275,102 @@ test('the oldest session is evicted when the session limit is reached', async ()
             await disconnect(connection);
         }
     });
+});
+
+test('an explicit MCP_HTTP_ALLOWED_HOSTS list is enforced instead of the loopback default', async () =>
+{
+    await withServer(async ({ url, handle }) =>
+    {
+        const authorized = { Authorization: `Bearer ${TOKEN}` };
+        const allowed = await rawRequest(url, { headers: { ...authorized, Host: 'scanner.example.org' }, body: INITIALIZE_BODY });
+        assert.equal(allowed.status, 200, allowed.body);
+        assert.equal(handle.sessionCount(), 1);
+
+        const loopback = await rawRequest(url, { headers: { ...authorized, Host: `127.0.0.1:${handle.port}` }, body: INITIALIZE_BODY });
+        assert.equal(loopback.status, 403, 'the loopback default no longer applies');
+        assert.equal(handle.sessionCount(), 1);
+    }, { MCP_HTTP_ALLOWED_HOSTS: 'scanner.example.org' });
+});
+
+test('a non-loopback bind without MCP_HTTP_ALLOWED_HOSTS accepts any Host header', async () =>
+{
+    await withServer(async ({ url, handle }) =>
+    {
+        const response = await rawRequest(url, {
+            headers: { Authorization: `Bearer ${TOKEN}`, Host: 'evil.example.org' },
+            body: INITIALIZE_BODY
+        });
+        assert.equal(response.status, 200, response.body);
+        assert.equal(handle.sessionCount(), 1);
+    }, { MCP_HTTP_HOST: '0.0.0.0' });
+});
+
+test('a failure while opening a session is a 500 and leaves no session behind', async () =>
+{
+    await withServer(async ({ url, handle }) =>
+    {
+        const response = await rawRequest(url, {
+            headers: { Authorization: `Bearer ${TOKEN}`, Host: `127.0.0.1:${handle.port}` },
+            body: INITIALIZE_BODY
+        });
+        assert.equal(response.status, 500);
+        assert.match(response.body, /internal error/);
+        assert.equal(handle.sessionCount(), 0);
+    }, {}, () => { throw new Error('boom'); });
+});
+
+test('the compiled entry point serves HTTP mode and exits cleanly on SIGTERM', async () =>
+{
+    const entryPoint = fileURLToPath(new URL('../src/index.js', import.meta.url));
+    const child = spawn(process.execPath, [entryPoint], {
+        env: { ...process.env, ETH_RPC_URL: 'http://127.0.0.1:1', MCP_HTTP_PORT: '0', MCP_AUTH_TOKEN: TOKEN },
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stderr = '';
+    let stdout = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.stdout.on('data', chunk => { stdout += chunk; });
+
+    const ready = /ready; http:\/\/127\.0\.0\.1:(\d+)\/mcp \(bearer auth\)/;
+    const port = await new Promise<number>((resolve, reject) =>
+    {
+        const timer = setTimeout(() => reject(new Error(`server did not start: ${stderr}`)), 10000);
+        child.stderr.on('data', () =>
+        {
+            const match = ready.exec(stderr);
+            if (match)
+            {
+                clearTimeout(timer);
+                resolve(Number(match[1]));
+            }
+        });
+        child.once('exit', code => { clearTimeout(timer); reject(new Error(`exited early with ${code}: ${stderr}`)); });
+    });
+
+    try
+    {
+        const url = new URL(`http://127.0.0.1:${port}/mcp`);
+        const unauthorized = await rawRequest(url, { headers: { Host: `127.0.0.1:${port}` } });
+        assert.equal(unauthorized.status, 401);
+
+        const initialized = await rawRequest(url, {
+            headers: { Host: `127.0.0.1:${port}`, Authorization: `Bearer ${TOKEN}` },
+            body: INITIALIZE_BODY
+        });
+        assert.equal(initialized.status, 200, initialized.body);
+        assert.ok(initialized.headers['mcp-session-id']);
+    }
+    finally
+    {
+        const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve =>
+            child.once('exit', (code, signal) => resolve({ code, signal })));
+        child.kill('SIGTERM');
+        const { code, signal } = await exit;
+        assert.equal(code, 0, `exit code ${code}, signal ${signal}, stderr: ${stderr}`);
+    }
+
+    assert.match(stderr, /SIGTERM received; shutting down/);
+    assert.match(stderr, /unauthorized request from 127\.0\.0\.1/);
+    assert.doesNotMatch(stderr, /warning: MCP_HTTP_ALLOWED_HOSTS/);
+    assert.equal(stdout, '', 'nothing may be written to stdout');
 });
