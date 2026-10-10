@@ -29,6 +29,12 @@ The server is written in TypeScript and compiled to `dist/` by `tsc`.
 | `SCANNER_MAX_FINISHED_JOBS` | `20` | Finished scans kept in memory |
 | `SCANNER_MAX_MATCHES_PER_SCAN` | `1000` | Matches after which a scan stops |
 | `SCANNER_RPC_TIMEOUT_MS` | `30000` | Per-call RPC timeout |
+| `MCP_HTTP_PORT` | unset | Switch from stdio to Streamable HTTP on this port |
+| `MCP_HTTP_HOST` | `127.0.0.1` | Bind address in HTTP mode |
+| `MCP_AUTH_TOKEN` | required in HTTP mode | Bearer token, at least 32 characters |
+| `MCP_HTTP_ALLOWED_HOSTS` | loopback forms | Accepted `Host` header values, comma-separated |
+
+### stdio (default)
 
 Claude Code registration (`.mcp.json` or `claude mcp add`):
 
@@ -43,6 +49,29 @@ Claude Code registration (`.mcp.json` or `claude mcp add`):
   }
 }
 ```
+
+### HTTP with bearer authentication
+
+Setting `MCP_HTTP_PORT` makes the server listen on `/mcp` instead of
+speaking stdio. Every request must carry `Authorization: Bearer <token>`
+matching `MCP_AUTH_TOKEN`.
+
+```
+$ export MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+$ MCP_HTTP_PORT=8080 ETH_RPC_URL=https://mainnet.infura.io/v3/<key> node dist/src/index.js
+```
+
+```
+$ claude mcp add --transport http ethereum-scanner http://127.0.0.1:8080/mcp \
+    --header "Authorization: Bearer $MCP_AUTH_TOKEN"
+```
+
+The server binds to loopback by default and validates the `Host` header
+against the loopback forms of its port. To expose it on a network set
+`MCP_HTTP_HOST` and `MCP_HTTP_ALLOWED_HOSTS`, and put a TLS-terminating
+reverse proxy in front; over plain HTTP the token travels in the clear.
+All token holders share one job store and can see and cancel each other's
+scans.
 
 ## Tools
 

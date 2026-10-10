@@ -71,7 +71,7 @@ MCP server reuses it unchanged:
 - Writing scan results to caller-specified files. Results are returned through tools; persistence is listed under future work.
 - Signer / deployment helpers in `contract-utils.js`. The scanner itself does not use them.
 - Multi-network routing. One server process targets one RPC endpoint.
-- Remote (HTTP) transport. stdio only; the code is transport-agnostic so this can be added later.
+- OAuth. The HTTP transport (§6.1) uses a static bearer token; OAuth 2.1 resource-server support is future work.
 
 ## 4. Integration strategy
 
@@ -130,7 +130,9 @@ MCP client (Claude Code / Desktop)
 ┌──────────────────────────────────────────────────────┐
 │ ethereum-scanner-mcp                                 │
 │                                                      │
-│  src/index.ts      parse config, start McpServer     │
+│  src/index.ts      parse config, pick transport      │
+│  src/http.ts       Streamable HTTP + bearer auth,    │
+│                    one McpServer per session         │
 │  src/server.ts     register tools                    │
 │  src/config.ts     env → Config (validated)          │
 │  src/rpc.ts        ethers v6 JsonRpcProvider,        │
@@ -160,7 +162,10 @@ Logging goes to `stderr` only. Nothing in the server may write to `stdout`.
 
 ## 6. Transport and configuration
 
-Transport: `StdioServerTransport` from the MCP SDK.
+Transport: `StdioServerTransport` by default. When `MCP_HTTP_PORT` is set
+the server instead listens with the SDK's `StreamableHTTPServerTransport`
+behind static bearer-token authentication (§6.1). Only one mode runs per
+process.
 
 Configuration is read from environment variables at startup. Tools cannot
 override the RPC endpoint; see §9.
@@ -174,8 +179,12 @@ override the RPC endpoint; see §9.
 | `SCANNER_MAX_FINISHED_JOBS` | `20` | Finished jobs retained in memory before the oldest is evicted. |
 | `SCANNER_MAX_MATCHES_PER_SCAN` | `1000` | A scan stops with state `completed` and `truncated: true` when reached. |
 | `SCANNER_RPC_TIMEOUT_MS` | `30000` | Per-call timeout. ethers v6 queues requests indefinitely while it retries network detection, so every call is raced against this. |
+| `MCP_HTTP_PORT` | unset | Enables HTTP mode when set. `0` binds an ephemeral port. |
+| `MCP_HTTP_HOST` | `127.0.0.1` | Bind address in HTTP mode. |
+| `MCP_AUTH_TOKEN` | required in HTTP mode | Static bearer token, at least 32 characters. Generate with `openssl rand -hex 32`. |
+| `MCP_HTTP_ALLOWED_HOSTS` | derived | Comma-separated `Host` header values accepted (DNS rebinding protection). Defaults to the loopback forms of the bound port when `MCP_HTTP_HOST` is loopback; otherwise the check is off and a startup warning is logged. |
 
-Example Claude Code registration:
+Example Claude Code registration (stdio):
 
 ```json
 {
@@ -187,6 +196,53 @@ Example Claude Code registration:
     }
   }
 }
+```
+
+### 6.1 HTTP mode and authentication
+
+Why a static token: the server has one operator and one RPC key. A single
+shared secret, checked on every request, is the smallest mechanism that
+lets remote MCP clients (claude.ai connectors, Claude Code with
+`--transport http`, another machine) reach the server. OAuth 2.1 adds
+per-user identity, expiry and revocation at the cost of an identity
+provider and public endpoints; the SDK's `mcpAuthRouter` and
+`requireBearerAuth` make it a bounded follow-up on top of this transport.
+
+Request handling in `src/http.ts`, in order:
+
+1. Path must be `/mcp`; anything else is 404.
+2. `Authorization: Bearer <token>` must match `MCP_AUTH_TOKEN`. The
+   comparison hashes both sides with SHA-256 and uses
+   `crypto.timingSafeEqual`, so neither timing nor length leaks. Failure
+   is 401 with `WWW-Authenticate: Bearer realm="ethereum-scanner-mcp"`,
+   logged with the remote address but never the presented token.
+3. `Mcp-Session-Id` routes to an existing session, or 404 if unknown.
+4. A request without a session must be a POST; a new `McpServer` and
+   transport are created for it. The transport itself rejects anything
+   but `initialize` with 400, in which case the half-open session is
+   discarded.
+5. The transport validates the `Host` header against the allowed list
+   (403 on mismatch) before any JSON-RPC processing.
+
+Sessions: one `McpServer` instance per MCP session, all sharing the job
+store, provider and config. Any authenticated caller therefore sees and
+can cancel any scan; the token is a single trust domain by design. A
+client DELETE closes its session. Clients that disappear without DELETE
+leave sessions behind (the transport has no idle timeout), so beyond
+`MAX_SESSIONS` (64) the oldest session is closed to make room.
+
+Shutdown: SIGINT and SIGTERM close every session's transport, then the
+listener, including open SSE connections.
+
+TLS is out of scope for the process: run it behind a reverse proxy that
+terminates HTTPS, or keep it on loopback. Over plain HTTP the token is
+visible on the wire.
+
+Example Claude Code registration (HTTP):
+
+```
+claude mcp add --transport http ethereum-scanner http://127.0.0.1:8080/mcp \
+  --header "Authorization: Bearer <token>"
 ```
 
 ## 7. Tool catalog
@@ -433,13 +489,22 @@ nested quantifiers (`(a+)+`, `(a*)*`), the common ReDoS shape. Bytecode
 inputs are bounded by the EVM (24 KiB runtime; creation data by block gas
 limit), which bounds regex runtime for non-pathological patterns.
 
-### 9.2 RPC endpoint (trust boundary: server → network)
+### 9.2 HTTP clients (trust boundary: network → server)
+
+Applies only in HTTP mode. Every request is authenticated before any
+parsing beyond the URL path (§6.1). Loopback binds validate the `Host`
+header by default to defeat DNS rebinding from a browser on the same
+machine. The token is compared in constant time and never logged. There is
+no per-user identity: holders of the token are one trust domain and share
+the job store.
+
+### 9.3 RPC endpoint (trust boundary: server → network)
 
 The endpoint comes from `ETH_RPC_URL` only. Tools do not accept a URL, so a
 model cannot point the server at internal services (SSRF) or exfiltrate the
 API key by changing the host. `get_network_status` masks the URL.
 
-### 9.3 Host execution
+### 9.4 Host execution
 
 `--on-match` and `--action-script` are intentionally not exposed. They are
 equivalent to a bash tool on the host and would need host-side gating that
@@ -447,14 +512,14 @@ MCP tool annotations alone cannot provide. If needed later, the safe shape is
 a server-side allowlist of named actions configured by the operator, never a
 command string from the model.
 
-### 9.4 Resource exhaustion
+### 9.5 Resource exhaustion
 
 Concurrency, block-range and match-count limits (§6) bound CPU, memory and
 RPC spend. The `delayMs` floor is 0 to match the CLI; operators on
 rate-limited providers should set `SCANNER_DEFAULT_DELAY_MS` and the model
 is told in the tool description that lower delays risk 429s.
 
-### 9.5 Input validation
+### 9.6 Input validation
 
 All tool inputs are declared as zod schemas and validated by the SDK before
 handlers run. Addresses are checksummed/validated with ethers `isAddress`;
@@ -469,6 +534,7 @@ ethereum-scanner-mcp/
 ├── src/
 │   ├── index.ts                  entry point (#!/usr/bin/env node)
 │   ├── server.ts                 McpServer + tool registration
+│   ├── http.ts                   Streamable HTTP transport, bearer auth, sessions
 │   ├── config.ts
 │   ├── rpc.ts
 │   ├── query.ts
@@ -478,6 +544,7 @@ ethereum-scanner-mcp/
 │   ├── query.test.ts
 │   ├── scan-job.test.ts
 │   ├── server.test.ts            tools exercised through the SDK's in-memory transport
+│   ├── http.test.ts              real listener on an ephemeral port: auth, Host check, sessions, eviction, shutdown
 │   └── stub-provider.ts          fake provider built from the scanner's template-output.json
 ├── dist/                         tsc output (ignored by git); bin points at dist/src/index.js
 ├── tsconfig.json                 strict, NodeNext, rootDir ".", outDir "dist"
@@ -494,12 +561,13 @@ dependencies are `typescript` and `@types/node`.
 
 ### Unit tests (no network)
 
-- `query.test.js`
+- `query.test.ts`
   - Accepts the README examples and `template-input-signature`; hexaized output equals the CLI's (`<a9059cbb>` for `transfer(address,uint256)`).
   - Rejects: bare identifiers, numbers, `import(...)`, unbalanced `<<`, nested quantifiers, over-length queries.
   - `match_bytecode` on the two entries of the scanner's `template-output.json` returns `true` for a selector present in that bytecode (`<<0x549262ba>>`) and `false` for an absent one.
-- `server.test.js` connects an SDK `Client` to the server over `InMemoryTransport` and exercises every tool, including error paths, pagination, concurrency and eviction.
-- `scan-job.test.js` with a stub provider
+- `server.test.ts` connects an SDK `Client` to the server over `InMemoryTransport` and exercises every tool, including error paths, pagination, concurrency and eviction.
+- `http.test.ts` starts the real HTTP listener on port 0 and checks: 401 without, with a wrong, or with a non-bearer credential; 404 on other paths; 403 on a foreign `Host` header with no session left behind; 400 for a non-initialize request without a session; a full handshake and tool call through the SDK's `StreamableHTTPClientTransport`; two sessions sharing the job store; DELETE ending a session; oldest-session eviction at the cap; `close()` ending sessions and the listener.
+- `scan-job.test.ts` with a stub provider
   - A 3-block range where block 2 contains one creation tx yields one match with all nine fields and the CLI's field names.
   - `onlyNonZeroBalance` filters a zero-balance contract.
   - `searchCreation` only / `searchRuntime` only / both behave as in the CLI.
@@ -543,7 +611,7 @@ schema.
 - **Persistence**: write finished jobs to a server-configured directory (`SCANNER_OUTPUT_DIR/<jobId>.json`) in the CLI's output-file format so results survive restarts and can feed the CLI's `--summary`.
 - **MCP resources**: expose `scan://jobs/{jobId}/results` as a resource for hosts that prefer resources over paginated tool calls.
 - **Progress notifications**: send MCP `notifications/progress` from `start_scan` when the client supplies a `progressToken`, removing the need to poll.
-- **Streamable HTTP transport** for shared deployments, with authentication.
+- **OAuth 2.1** on the HTTP transport: publish protected-resource metadata and validate tokens from an external authorization server via the SDK's `mcpAuthRouter` / `ProxyOAuthServerProvider`, replacing the shared static token with per-user identity.
 - **Named endpoints**: `ETH_RPC_URLS` map plus a `network` parameter on tools, keeping the no-arbitrary-URL rule.
 
 ## 14. Decisions on the open questions
