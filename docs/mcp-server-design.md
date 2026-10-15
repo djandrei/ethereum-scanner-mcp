@@ -2,12 +2,12 @@
 
 Status: implemented (v0.1.0)
 Date: 2026-10-08
-Target project: `nodejs-ethereum-scanner` (sibling repository)
+Target project: `evmap` (sibling repository, directory `nodejs-ethereum-scanner`)
 This repository: `ethereum-scanner-mcp`
 
 ## 1. Purpose
 
-Expose the capabilities of the `nodejs-ethereum-scanner` CLI to MCP clients
+Expose the capabilities of the `evmap` CLI to MCP clients
 (Claude Code, Claude Desktop, any Model Context Protocol host) so that an LLM
 can discover smart contracts on an Ethereum network by querying creation data
 and runtime bytecode, without shelling out to the CLI and without parsing
@@ -19,7 +19,7 @@ scanner's `utils/search-utils.js` so that MCP results and CLI results agree.
 
 ## 2. Background: what the scanner does
 
-The CLI (`./scanner`) iterates a block range on a JSON-RPC endpoint, finds
+The CLI (`./evmap`) iterates a block range on a JSON-RPC endpoint, finds
 contract-creation transactions (`tx.to == null`), fetches the receipt,
 balance and runtime code, and evaluates a boolean query against the creation
 data and/or runtime bytecode. The query language wraps tokens in `<< >>`:
@@ -35,7 +35,7 @@ data and/or runtime bytecode. The query language wraps tokens in `<< >>`:
 hex; `SearchUtils.evaluateQuery()` substitutes `0`/`1` per token and hands the
 remaining arithmetic expression to `mathjs` `eval()`.
 
-A second CLI, `./hex`, returns the keccak256 hash or 4-byte selector of a
+A second CLI, `./evmap-hex`, returns the keccak256 hash or 4-byte selector of a
 signature.
 
 Match records written by the CLI (`--output-file`) have this shape and the
@@ -59,11 +59,11 @@ MCP server reuses it unchanged:
 
 ### Goals
 
-- Every read-only capability of `scanner` and `hex` is reachable through an MCP tool.
+- Every read-only capability of `evmap` and `evmap-hex` is reachable through an MCP tool.
 - Scans that take minutes or hours run as background jobs; no tool call blocks longer than one RPC round trip.
 - Query semantics are identical to the CLI (same `search-utils.js` code path).
 - Output stays small enough for an LLM context: bytecode is excluded unless asked for.
-- Zero changes to the `nodejs-ethereum-scanner` repository are required for v1.
+- Zero changes to the `evmap` repository are required for v1.
 
 ### Non-goals (v1)
 
@@ -79,8 +79,8 @@ Three options were considered.
 
 | Option | How | Pros | Cons |
 |---|---|---|---|
-| A. Subprocess wrapper | Spawn `./scanner --output-file <tmp> --status`, parse stdout for progress, read the JSON file for matches | No duplication; scanner untouched | `process.exit()` on validation errors exits with code 0, so failure must be detected by text; progress parsed from console lines; one extra `getTransaction` RPC call per transaction in the block; cannot cancel cleanly mid-block |
-| B. In-process, reuse the query engine, own the loop (**recommended**) | `require` the scanner's `utils/search-utils.js`; implement the block loop in the server with its own provider | Structured progress, cancellation, errors; identical query semantics; stdout stays clean for stdio transport | ~80 lines of loop logic mirror `scanner`'s `main()` and must be kept in step |
+| A. Subprocess wrapper | Spawn `./evmap --output-file <tmp> --status`, parse stdout for progress, read the JSON file for matches | No duplication; scanner untouched | `process.exit()` on validation errors exits with code 0, so failure must be detected by text; progress parsed from console lines; one extra `getTransaction` RPC call per transaction in the block; cannot cancel cleanly mid-block |
+| B. In-process, reuse the query engine, own the loop (**recommended**) | `require` the scanner's `utils/search-utils.js`; implement the block loop in the server with its own provider | Structured progress, cancellation, errors; identical query semantics; stdout stays clean for stdio transport | ~80 lines of loop logic mirror `evmap`'s `main()` and must be kept in step |
 | C. Refactor the scanner into a library | Extract `scanBlocks(params, callbacks)` into the scanner repo; CLI and MCP both call it | Single source of truth for the loop | Requires changes in the other repository; out of scope for v1 |
 
 **Decision: option B for v1, with option C as the strategic follow-up.**
@@ -105,12 +105,12 @@ receipt, balance and code fetches are unchanged.
   "@modelcontextprotocol/sdk": "^1.32.1",
   "ethers": "^6.17.0",
   "zod": "<version in the SDK's peer range>",
-  "nodejs-ethereum-scanner": "file:../nodejs-ethereum-scanner"
+  "evmap": "file:../nodejs-ethereum-scanner"
 }
 ```
 
 `search-utils.js` is loaded by deep path
-(`nodejs-ethereum-scanner/utils/search-utils.js`). The scanner package has
+(`evmap/utils/search-utils.js`). The scanner package has
 no `exports` field, so deep imports are permitted. Its own pinned
 dependencies (`ethers` 4.0.23, `mathjs` 5.4.2) resolve from its own
 `node_modules`; they do not conflict with the server's `ethers` v6 because
@@ -142,9 +142,9 @@ MCP client (Claude Code / Desktop)
 │  src/scan-job.ts   one job: loop, progress, cancel   │
 │  src/job-store.ts  in-memory registry, limits        │
 └──────────────┬───────────────────────────────────────┘
-               │ require('nodejs-ethereum-scanner/utils/search-utils.js')
+               │ require('evmap/utils/search-utils.js')
                ▼
-   nodejs-ethereum-scanner (unchanged)
+   evmap (unchanged)
                │
                ▼
    Ethereum JSON-RPC endpoint (ETH_RPC_URL)
@@ -253,7 +253,7 @@ the server never throws across the protocol boundary.
 
 ### 7.1 `hex_signature`
 
-Mirrors `./hex`.
+Mirrors `./evmap-hex`.
 
 Input:
 
@@ -604,7 +604,7 @@ schema.
 | `--verbose` | `get_scan_results.includeBytecode` |
 | `--summary` | `get_scan_results` with default `includeBytecode: false` |
 | `--on-match`, `--action-script` | excluded (§9.3) |
-| `hex --input [--signature]` | `hex_signature` |
+| `evmap-hex --input [--signature]` | `hex_signature` |
 | network status printout | `get_network_status` |
 
 ## 13. Future work
@@ -619,5 +619,5 @@ schema.
 ## 14. Decisions on the open questions
 
 1. `blockEnd` defaults to the network head, as in the CLI. On a node that is not fully synced the head reports 0 and `start_scan` rejects with "block start N cannot be greater than block end 0", which is the documented CLI known issue surfaced as a tool error.
-2. The scanner is a `file:../nodejs-ethereum-scanner` dependency. Both repositories are developed side by side; switch to a git URL once the scanner is tagged.
+2. The scanner is a `file:../nodejs-ethereum-scanner` dependency, declared under its package name `evmap` (the repository directory kept its old name when the package was renamed). Both repositories are developed side by side; switch to a git URL once the scanner is tagged.
 3. `SCANNER_MAX_BLOCKS_PER_SCAN` defaults to 1000, not 10000, because 10,000 mainnet blocks at a 1 s delay plus per-contract RPC calls takes several hours on a public provider. Operators with a local node raise it through the environment variable.

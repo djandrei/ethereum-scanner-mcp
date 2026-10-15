@@ -8,7 +8,7 @@ import type { RpcBlock, RpcReceipt, RpcTransaction, ScanProvider } from '../src/
 import type { MatchRecord } from '../src/scan-job.js';
 
 const require = createRequire(import.meta.url);
-export const template = require('nodejs-ethereum-scanner/template-output.json') as MatchRecord[];
+export const template = require('evmap/template-output.json') as MatchRecord[];
 export const [templateA, templateB] = template as [MatchRecord, MatchRecord];
 
 export function creationTx(record: MatchRecord, overrides: Partial<RpcTransaction> = {}): RpcTransaction

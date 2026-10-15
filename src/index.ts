@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Entry point: MCP server for nodejs-ethereum-scanner.
+ * Entry point: MCP server for the evmap scanner.
  * Speaks stdio by default; Streamable HTTP with bearer auth when
  * MCP_HTTP_PORT is set.
  */

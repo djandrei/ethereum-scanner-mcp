@@ -1,6 +1,6 @@
 # ethereum-scanner-mcp
 
-MCP server that exposes the [nodejs-ethereum-scanner](../nodejs-ethereum-scanner)
+MCP server that exposes the [evmap](../nodejs-ethereum-scanner) EVM
 smart contract scanner to MCP clients such as Claude Code and Claude Desktop.
 See [docs/mcp-server-design.md](docs/mcp-server-design.md) for the design.
 
@@ -77,7 +77,7 @@ scans.
 
 | Tool | Purpose |
 |---|---|
-| `hex_signature` | keccak256 hash and 4-byte selector of a function signature (the `hex` utility) |
+| `hex_signature` | keccak256 hash and 4-byte selector of a function signature (the `evmap-hex` utility) |
 | `hexaize_query` | Validate a query and show the hexaized form the scanner evaluates |
 | `match_bytecode` | Evaluate a query against one bytecode, given inline or fetched by address |
 | `get_network_status` | Network name, chain id, block number, gas limit |

@@ -29,7 +29,7 @@ interface SearchUtilsInstance
 type SearchUtilsConstructor = new (parameters: { query: string }) => SearchUtilsInstance;
 
 const require = createRequire(import.meta.url);
-const SearchUtils = require('nodejs-ethereum-scanner/utils/search-utils.js') as SearchUtilsConstructor;
+const SearchUtils = require('evmap/utils/search-utils.js') as SearchUtilsConstructor;
 
 export const MAX_QUERY_LENGTH = 2048;
 export const MAX_QUERY_TOKENS = 32;
