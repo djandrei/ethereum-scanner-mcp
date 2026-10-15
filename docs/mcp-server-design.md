@@ -2,7 +2,7 @@
 
 Status: implemented (v0.1.0)
 Date: 2026-10-08
-Target project: `evmap` (sibling repository, directory `nodejs-ethereum-scanner`)
+Target project: `evmap` (sibling repository, directory `evm-scanner`)
 This repository: `ethereum-scanner-mcp`
 
 ## 1. Purpose
@@ -105,7 +105,7 @@ receipt, balance and code fetches are unchanged.
   "@modelcontextprotocol/sdk": "^1.32.1",
   "ethers": "^6.17.0",
   "zod": "<version in the SDK's peer range>",
-  "evmap": "file:../nodejs-ethereum-scanner"
+  "evmap": "file:../evm-scanner"
 }
 ```
 
@@ -619,5 +619,5 @@ schema.
 ## 14. Decisions on the open questions
 
 1. `blockEnd` defaults to the network head, as in the CLI. On a node that is not fully synced the head reports 0 and `start_scan` rejects with "block start N cannot be greater than block end 0", which is the documented CLI known issue surfaced as a tool error.
-2. The scanner is a `file:../nodejs-ethereum-scanner` dependency, declared under its package name `evmap` (the repository directory kept its old name when the package was renamed). Both repositories are developed side by side; switch to a git URL once the scanner is tagged.
+2. The scanner is a `file:../evm-scanner` dependency, declared under its package name `evmap`. Both repositories are developed side by side; switch to a git URL once the scanner is tagged.
 3. `SCANNER_MAX_BLOCKS_PER_SCAN` defaults to 1000, not 10000, because 10,000 mainnet blocks at a 1 s delay plus per-contract RPC calls takes several hours on a public provider. Operators with a local node raise it through the environment variable.

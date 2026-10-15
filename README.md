@@ -1,6 +1,6 @@
 # ethereum-scanner-mcp
 
-MCP server that exposes the [evmap](../nodejs-ethereum-scanner) EVM
+MCP server that exposes the [evmap](../evm-scanner) EVM
 smart contract scanner to MCP clients such as Claude Code and Claude Desktop.
 See [docs/mcp-server-design.md](docs/mcp-server-design.md) for the design.
 
@@ -11,7 +11,7 @@ repositories must sit side by side and the scanner must have its own
 dependencies installed:
 
 ```
-$ (cd ../nodejs-ethereum-scanner && npm install)
+$ (cd ../evm-scanner && npm install)
 $ npm install
 $ npm run build
 ```
