@@ -13,10 +13,12 @@ const CLI_FIELDS = [
 
 type ParamOverrides = Partial<ScanParams> & { query: string };
 
-function makeJob(provider: ScanProvider, params: ParamOverrides, limits: Partial<ScanLimits> = {}): ScanJob
+function makeJob(provider: ScanProvider, params: ParamOverrides, limits: Partial<ScanLimits> = {},
+    log?: (message: string) => void): ScanJob
 {
     return new ScanJob({
         provider,
+        log,
         matcher: createMatcher(params.query),
         params: {
             blockStart: 1,
@@ -171,9 +173,35 @@ test('RPC failure after retries moves the job to failed and keeps earlier matche
     await job.done;
 
     assert.equal(job.state, 'failed');
-    assert.match(job.error ?? '', /getBlock\(2\) failed after 3 attempts: boom/);
+    assert.match(job.error ?? '', /getBlock\(2\) failed after 5 attempts: boom/);
     assert.equal(job.matches.length, 1);
     assert.equal(provider.calls.filter(call => call === 'getBlock(2)').length, 0);
+});
+
+test('each retried RPC call is logged with the attempt count and backoff delay', async () =>
+{
+    const provider = templateScenario();
+    const original = provider.getBlock.bind(provider);
+    let failuresLeft = 2;
+    provider.getBlock = async (number, prefetch) =>
+    {
+        if (number === 2 && failuresLeft > 0)
+        {
+            failuresLeft--;
+            throw new Error('boom');
+        }
+        return original(number, prefetch);
+    };
+    const logged: string[] = [];
+    const job = makeJob(provider, { query: '<<0x549262ba>>' }, {}, message => logged.push(message)).start();
+    await job.done;
+
+    assert.equal(job.state, 'completed');
+    assert.equal(job.matches.length, 2);
+    assert.deepEqual(logged, [
+        `${job.jobId}: rpc getBlock(2) failed (attempt 1/5): boom; retrying in 1 ms`,
+        `${job.jobId}: rpc getBlock(2) failed (attempt 2/5): boom; retrying in 2 ms`
+    ]);
 });
 
 test('a hanging RPC call times out instead of blocking forever', async () =>

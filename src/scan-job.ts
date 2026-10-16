@@ -8,8 +8,11 @@ import { randomUUID } from 'node:crypto';
 import type { Matcher } from './query.js';
 import { withTimeout, type ScanProvider } from './rpc.js';
 
-const RPC_ATTEMPTS = 3;
-const RPC_BACKOFF_MS = 500;
+// Same retry policy as the CLI's rpcUtils.withRetry(): 5 attempts, backoff
+// 1 s, 2 s, 4 s, 8 s capped at 16 s, each retry logged.
+const RPC_ATTEMPTS = 5;
+const RPC_BACKOFF_MS = 1000;
+const RPC_MAX_BACKOFF_MS = 16000;
 const MAX_WARNINGS = 50;
 
 export type ScanState = 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
@@ -29,7 +32,7 @@ export interface ScanLimits
 {
     maxMatches: number;
     rpcTimeoutMs: number;
-    /** Base retry backoff; defaults to 500 ms. */
+    /** Base retry backoff; defaults to 1000 ms. */
     rpcBackoffMs?: number;
 }
 
@@ -253,7 +256,10 @@ export class ScanJob
                 if (attempt < RPC_ATTEMPTS)
                 {
                     const backoffMs = this.limits.rpcBackoffMs ?? RPC_BACKOFF_MS;
-                    await sleep(backoffMs * 2 ** (attempt - 1), this.abortController.signal);
+                    const delayMs = Math.min(backoffMs * 2 ** (attempt - 1), RPC_MAX_BACKOFF_MS);
+                    this.log(`${this.jobId}: rpc ${label} failed (attempt ${attempt}/${RPC_ATTEMPTS}): ` +
+                        `${errorMessage(error)}; retrying in ${delayMs} ms`);
+                    await sleep(delayMs, this.abortController.signal);
                 }
             }
         }

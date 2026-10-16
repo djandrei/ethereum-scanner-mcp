@@ -440,7 +440,8 @@ data / empty bytecode advisories are kept as `warnings` entries.
 
 ### Failure handling
 
-- A transient RPC error on a single call is retried 3 times with exponential backoff (ethers v6 already retries some network errors; the job adds a bounded outer retry). After that the job moves to `failed` with the error message and keeps the matches found so far.
+- A transient RPC error on a single call is retried with the CLI's policy: 5 attempts with exponential backoff of 1 s, 2 s, 4 s, 8 s capped at 16 s (ethers v6 already retries some network errors; the job adds a bounded outer retry). Each retry is logged to stderr with the call, the attempt count and the reason. After the last attempt the job moves to `failed` with the error message and keeps the matches found so far.
+- The CLI fetches each transaction by hash and skips one the provider returns as `null`. The server instead fetches whole blocks with their transactions prefetched; a malformed transaction entry makes `getBlock` fail, so after the retries the job is `failed` with the block named in the error. There is no per-transaction skip on this path.
 - Provider construction errors (bad URL) fail at server startup, not per job, and are reported on stderr.
 - An unhandled exception in the loop is caught at the job boundary and recorded as `failed`; it never crashes the server process.
 
@@ -448,7 +449,7 @@ data / empty bytecode advisories are kept as `warnings` entries.
 
 - Match records are held in memory, including bytecode (up to 24 KiB runtime + creation data each). With `SCANNER_MAX_MATCHES_PER_SCAN = 1000` and 20 retained jobs the worst case is on the order of 1 GiB; defaults should be lowered on constrained hosts. The limits exist for this reason.
 - Jobs are lost when the server process exits. This is acceptable for v1 because the MCP host owns the process lifetime; persistence is future work.
-- Each RPC call is retried 3 times with exponential backoff (500 ms base) and raced against `SCANNER_RPC_TIMEOUT_MS`.
+- Each RPC call is retried up to 5 times with exponential backoff (1 s base, 16 s cap) and raced against `SCANNER_RPC_TIMEOUT_MS`.
 
 ### Identifiers
 
