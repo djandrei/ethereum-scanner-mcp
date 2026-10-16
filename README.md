@@ -1,4 +1,4 @@
-# ethereum-scanner-mcp
+# evm-scanner-mcp
 
 MCP server that exposes the [evmap](../evm-scanner) EVM
 smart contract scanner to MCP clients such as Claude Code and Claude Desktop.
@@ -41,9 +41,9 @@ Claude Code registration (`.mcp.json` or `claude mcp add`):
 ```json
 {
   "mcpServers": {
-    "ethereum-scanner": {
+    "evm-scanner": {
       "command": "node",
-      "args": ["/path/to/ethereum-scanner-mcp/dist/src/index.js"],
+      "args": ["/path/to/evm-scanner-mcp/dist/src/index.js"],
       "env": { "ETH_RPC_URL": "https://mainnet.infura.io/v3/<key>" }
     }
   }
@@ -62,7 +62,7 @@ $ MCP_HTTP_PORT=8080 ETH_RPC_URL=https://mainnet.infura.io/v3/<key> node dist/sr
 ```
 
 ```
-$ claude mcp add --transport http ethereum-scanner http://127.0.0.1:8080/mcp \
+$ claude mcp add --transport http evm-scanner http://127.0.0.1:8080/mcp \
     --header "Authorization: Bearer $MCP_AUTH_TOKEN"
 ```
 

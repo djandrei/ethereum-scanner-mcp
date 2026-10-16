@@ -115,7 +115,7 @@ export interface ServerDependencies
 export function createServer({ config, provider, jobStore, log }: ServerDependencies): McpServer
 {
     const server = new McpServer({
-        name: 'ethereum-scanner',
+        name: 'evm-scanner',
         version: '0.1.0'
     });
 

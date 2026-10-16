@@ -124,7 +124,7 @@ export function startHttpServer({ config, createSession, log }: HttpServerOption
         if (presented === null || !tokenMatches(presented, config.authToken))
         {
             log(`unauthorized request from ${request.socket.remoteAddress ?? 'unknown'}`);
-            sendJsonError(response, 401, 'unauthorized', { 'WWW-Authenticate': 'Bearer realm="ethereum-scanner-mcp"' });
+            sendJsonError(response, 401, 'unauthorized', { 'WWW-Authenticate': 'Bearer realm="evm-scanner-mcp"' });
             return;
         }
 

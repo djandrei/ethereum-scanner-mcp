@@ -1,15 +1,15 @@
-# Ethereum Scanner MCP Server — Design
+# EVM Scanner MCP Server — Design
 
 Status: implemented (v0.1.0)
 Date: 2026-10-08
 Target project: `evmap` (sibling repository, directory `evm-scanner`)
-This repository: `ethereum-scanner-mcp`
+This repository: `evm-scanner-mcp`
 
 ## 1. Purpose
 
 Expose the capabilities of the `evmap` CLI to MCP clients
 (Claude Code, Claude Desktop, any Model Context Protocol host) so that an LLM
-can discover smart contracts on an Ethereum network by querying creation data
+can discover smart contracts on an EVM network by querying creation data
 and runtime bytecode, without shelling out to the CLI and without parsing
 console output.
 
@@ -128,7 +128,7 @@ MCP client (Claude Code / Desktop)
         │  JSON-RPC over stdio
         ▼
 ┌──────────────────────────────────────────────────────┐
-│ ethereum-scanner-mcp                                 │
+│ evm-scanner-mcp                                      │
 │                                                      │
 │  src/index.ts      parse config, pick transport      │
 │  src/http.ts       Streamable HTTP + bearer auth,    │
@@ -189,9 +189,9 @@ Example Claude Code registration (stdio):
 ```json
 {
   "mcpServers": {
-    "ethereum-scanner": {
+    "evm-scanner": {
       "command": "node",
-      "args": ["/path/to/ethereum-scanner-mcp/dist/src/index.js"],
+      "args": ["/path/to/evm-scanner-mcp/dist/src/index.js"],
       "env": { "ETH_RPC_URL": "https://mainnet.infura.io/v3/<key>" }
     }
   }
@@ -214,7 +214,7 @@ Request handling in `src/http.ts`, in order:
 2. `Authorization: Bearer <token>` must match `MCP_AUTH_TOKEN`. The
    comparison hashes both sides with SHA-256 and uses
    `crypto.timingSafeEqual`, so neither timing nor length leaks. Failure
-   is 401 with `WWW-Authenticate: Bearer realm="ethereum-scanner-mcp"`,
+   is 401 with `WWW-Authenticate: Bearer realm="evm-scanner-mcp"`,
    logged with the remote address but never the presented token.
 3. `Mcp-Session-Id` routes to an existing session, or 404 if unknown.
 4. A request without a session must be a POST; a new `McpServer` and
@@ -241,7 +241,7 @@ visible on the wire.
 Example Claude Code registration (HTTP):
 
 ```
-claude mcp add --transport http ethereum-scanner http://127.0.0.1:8080/mcp \
+claude mcp add --transport http evm-scanner http://127.0.0.1:8080/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
@@ -529,7 +529,7 @@ hex strings must match `^0x[0-9a-fA-F]*$`.
 ## 10. Project layout
 
 ```
-ethereum-scanner-mcp/
+evm-scanner-mcp/
 ├── docs/
 │   └── mcp-server-design.md      this document
 ├── src/
@@ -549,7 +549,7 @@ ethereum-scanner-mcp/
 │   └── stub-provider.ts          fake provider built from the scanner's template-output.json
 ├── dist/                         tsc output (ignored by git); bin points at dist/src/index.js
 ├── tsconfig.json                 strict, NodeNext, rootDir ".", outDir "dist"
-├── package.json                  "type": "module", "bin": { "ethereum-scanner-mcp": "dist/src/index.js" }
+├── package.json                  "type": "module", "bin": { "evm-scanner-mcp": "dist/src/index.js" }
 ├── LICENSE.md
 └── .gitignore
 ```

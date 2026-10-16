@@ -20,7 +20,7 @@ console.log = (...args: unknown[]) => console.error(...args);
 
 function log(message: string): void
 {
-    process.stderr.write(`[ethereum-scanner-mcp] ${message}\n`);
+    process.stderr.write(`[evm-scanner-mcp] ${message}\n`);
 }
 
 async function main(): Promise<void>
